@@ -28,6 +28,7 @@ import Control.Monad
 import Data.List (nub)
 import Control.Arrow
 import qualified Data.Map as M
+import qualified Outputable as O
 
 ----------------------------------------------------------------
 
@@ -60,6 +61,16 @@ collectSpansTypes withConstraints tcs lc =
       )
     (G.tm_typechecked_source tcs)
   where
+    filterHCS t = do
+        df <- G.getSessionDynFlags
+        let filterTy p ty =
+              let (con, ts) = G.splitAppTys $ p ty
+              in G.mkAppTys con $ map (filterTy p) ts
+            rmHCS ty =
+              let ps = getPreds ty
+                  ps' = first (filter ((/= "GHC.Stack.Types.HasCallStack") . O.showSDocForUser df O.alwaysQualify . O.ppr)) ps
+              in uncurry G.mkFunTys $ if all (uncurry G.eqType) $ zip (fst ps) (fst ps') then ps' else ps
+        return $ filterTy rmHCS t
     -- Helper function to insert mapping into CstGenQS
     insExp x = M.insert (G.abe_mono x) (G.varType $ G.abe_poly x)
     -- If there is AbsBinds here, insert mapping into CstGenQS if needed
@@ -93,7 +104,11 @@ collectSpansTypes withConstraints tcs lc =
     -- Gets monomorphic type with location
     getType' x@(L spn _)
       | G.isGoodSrcSpan spn && spn `G.spans` lc
-      = getType tcs x
+      = do
+          t <- getType tcs x
+          case t of
+            Nothing -> return Nothing
+            Just (s, t') -> Just . (,) s <$> filterHCS t'
       | otherwise = return Nothing
     -- Gets constrained type
     constrainedType :: [Var] -- ^ Binders in expression, i.e. anything with Id
